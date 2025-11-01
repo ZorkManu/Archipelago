@@ -864,12 +864,11 @@ def process_data(ctx: SettlersContext):
     ctx.set_value("starting_hero",get_starting_hero(ctx.slot_data["starting_hero"]))
     difficulty = ctx.slot_data["difficulty"]
     ctx.set_value("difficulty",difficulty)
-    #ctx.set_value("player_color",ctx.slot_data["player_color"])
-    #ctx.set_value("game_speed",ctx.slot_data["game_speed"])
-    ctx.set_value("player_color",2)
+    ctx.set_value("player_color",ctx.slot_data["player_color"])
+    ctx.set_value("game_speed",ctx.slot_data["game_speed"])
 
     # Progression Difficulty Balancing
-    if 1:
+    if ctx.slot_data["progression_difficulty"] == "true":
         progression_status = len(item_counts)/len(item_ids)
         if difficulty == 1:
             progression_status = math.floor(progression_status * 2)
