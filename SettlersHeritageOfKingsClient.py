@@ -149,7 +149,6 @@ class SettlersContext(CommonContext):
             new_path = os.path.join(savegames_base, new_name)
             # Rename the folder
             os.rename(current_path, new_path)
-            logger.info(f"Updated SaveGames folder name to: {new_name}")
         except Exception as e:
             logger.error(f"Failed to update SaveGames folder name: {e}")
 
@@ -226,7 +225,7 @@ class SettlersContext(CommonContext):
                 # Key found, search for the pattern 00 03 00 02 00 00 00
                 pattern = bytes([0x00, 0x03, 0x00, 0x02, 0x00, 0x00, 0x00])
                 pattern_pos = search_content.find(pattern, key_pos + len(key_bytes))
-                
+
                 if pattern_pos != -1:
                     # Pattern found, the value is the next byte
                     # The value is stored as 0x30 + value, so we need to subtract 0x30
@@ -779,20 +778,14 @@ class SettlersContext(CommonContext):
                     lvlstring = '-extra2 -MAP:"20_battleofevelance_archipelago" -scewindow'
                     
             
-                logger.info(f"Staring Level {level_id}...")
-                try:
-                    process_data(self.ctx)
+                logger.info(f"Starting Level {level_id}...")
+                process_data(self.ctx)
                     
-                    game_exe = os.path.join(self.ctx.game_path, "bin", "settlershok.exe")
-                    if not os.path.exists(game_exe):
-                        logger.error("Fehler: settlershok.exe nicht gefunden!")
-                        return
-                    os.chdir(os.path.dirname(game_exe))
+                game_exe = os.path.join(self.ctx.game_path, "bin", "settlershok.exe")
+                os.chdir(os.path.dirname(game_exe))
                 
-                    command = f'"{game_exe}" {lvlstring}'
-                    subprocess.Popen(command, shell=True)
-                except Exception as e:
-                    logger.error(f"Fehler beim Starten: {str(e)}")
+                command = f'"{game_exe}" {lvlstring}'
+                subprocess.Popen(command, shell=True)
 
             def update_tab_visibility(self):
                 # Update tab visibility based on connection status
@@ -868,7 +861,7 @@ def process_data(ctx: SettlersContext):
     ctx.set_value("game_speed",ctx.slot_data["game_speed"])
 
     # Progression Difficulty Balancing
-    if ctx.slot_data["progression_difficulty"] == "true":
+    if ctx.slot_data["progression_difficulty"] == 1:
         progression_status = len(item_counts)/len(item_ids)
         if difficulty == 1:
             progression_status = math.floor(progression_status * 2)
