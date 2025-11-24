@@ -30,6 +30,7 @@ def get_game_documents_folder():
     possible_folders = [
         "DIE SIEDLER - DEdk",
         "THE SETTLERS - HoK"
+        "The Settlers - Heritage of Kings"
     ]
     
     for folder_name in possible_folders:
