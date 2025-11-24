@@ -24,6 +24,22 @@ GDBReader = None
 
 SYSTEM_MESSAGE_ID = 0
 
+def get_game_documents_folder():
+    """Find the game documents folder, checking both German and English folder names."""
+    documents_dir = os.path.join(os.path.expanduser("~"), "Documents")
+    possible_folders = [
+        "DIE SIEDLER - DEdk",
+        "THE SETTLERS - HoK"
+    ]
+    
+    for folder_name in possible_folders:
+        folder_path = os.path.join(documents_dir, folder_name)
+        if os.path.exists(folder_path):
+            return folder_name
+    
+    # If none exist, return the German version as default (will be created)
+    return "DIE SIEDLER - DEdk"
+
 CONNECTION_TIMING_OUT_STATUS = "Connection timing out. Please restart your game, then restart connector_settlers.lua"
 CONNECTION_REFUSED_STATUS = "Connection Refused. Please start your game and make sure connector_settlers.lua is running"
 CONNECTION_RESET_STATUS = "Connection was reset. Please restart your game, then restart connector_settlers.lua"
@@ -113,9 +129,10 @@ class SettlersContext(CommonContext):
             current_value = self.get_item_count_for_id(item_id)
             # Build segment
             segment = f"{item_name}.{current_value}-"
-            # Resolve Documents\DIE SIEDLER - DEdk\SaveGames
+            # Resolve Documents\<Game Folder>\SaveGames
             documents_dir = os.path.join(os.path.expanduser("~"), "Documents")
-            savegames_base = os.path.join(documents_dir, "DIE SIEDLER - DEdk", "SaveGames")
+            game_folder = get_game_documents_folder()
+            savegames_base = os.path.join(documents_dir, game_folder, "SaveGames")
             os.makedirs(savegames_base, exist_ok=True)
             prefix = "__archipelago-"
             candidates = [d for d in os.listdir(savegames_base) if d.startswith(prefix) and os.path.isdir(os.path.join(savegames_base, d))]
@@ -155,9 +172,10 @@ class SettlersContext(CommonContext):
     def reset_savegames_folder(self):
         """Reset the SaveGames folder to __archipelago-"""
         try:
-            # Resolve Documents\DIE SIEDLER - DEdk\SaveGames
+            # Resolve Documents\<Game Folder>\SaveGames
             documents_dir = os.path.join(os.path.expanduser("~"), "Documents")
-            savegames_base = os.path.join(documents_dir, "DIE SIEDLER - DEdk", "SaveGames")
+            game_folder = get_game_documents_folder()
+            savegames_base = os.path.join(documents_dir, game_folder, "SaveGames")
             os.makedirs(savegames_base, exist_ok=True)
             prefix = "__archipelago-"
             
@@ -487,7 +505,8 @@ class SettlersContext(CommonContext):
                 return await self.get_game_path()
                 
             # Set GDB path
-            self.gdb_path = os.path.join(os.path.expanduser("~"), "Documents", "DIE SIEDLER - DEdK", "Data", "GDB.bin")
+            game_folder = get_game_documents_folder()
+            self.gdb_path = os.path.join(os.path.expanduser("~"), "Documents", game_folder, "Data", "GDB.bin")
             
             # Check if GDB file exists
             if not os.path.exists(self.gdb_path):
@@ -514,7 +533,8 @@ class SettlersContext(CommonContext):
         else:
             # If game_path is already set, make sure gdb_path is also set
             if not self.gdb_path:
-                self.gdb_path = os.path.join(os.path.expanduser("~"), "Documents", "DIE SIEDLER - DEdK", "Data", "GDB.bin")
+                game_folder = get_game_documents_folder()
+                self.gdb_path = os.path.join(os.path.expanduser("~"), "Documents", game_folder, "Data", "GDB.bin")
                 
             # Verify GDB file still exists and is accessible
             if not os.path.exists(self.gdb_path):
