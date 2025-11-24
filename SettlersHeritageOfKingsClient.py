@@ -29,7 +29,7 @@ def get_game_documents_folder():
     documents_dir = os.path.join(os.path.expanduser("~"), "Documents")
     possible_folders = [
         "DIE SIEDLER - DEdk",
-        "THE SETTLERS - HoK"
+        "THE SETTLERS - HoK",
         "The Settlers - Heritage of Kings"
     ]
     
