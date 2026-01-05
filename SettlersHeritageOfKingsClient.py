@@ -64,12 +64,41 @@ class SettlersCommandProcessor(ClientCommandProcessor):
         if isinstance(self.ctx, SettlersContext):
             logger.info(f"Game Status: {self.ctx.game_status}")
             
-    def _cmd_game_path(self):
-        """Set or display the game installation path"""
-        if self.ctx.game_path:
-            logger.info(f"Current game path: {self.ctx.game_path}")
+    def _cmd_game_path(self, *args):
+        """Set or display the game installation path and GDB path
+        
+        Usage:
+            /game_path                    - Display current paths
+            /game_path <path>             - Set game installation path
+        """
+        # If path is provided as argument, set it
+        if args:
+            new_path = " ".join(args).strip('"\'')  # Join args and remove quotes
+            if os.path.exists(new_path):
+                self.ctx.game_path = new_path
+                self.ctx.save_game_path()
+                logger.info(f"Game path set to: {self.ctx.game_path}")
+                
+                # Recalculate GDB path
+                game_folder = get_game_documents_folder()
+                documents_dir = os.path.join(os.path.expanduser("~"), "Documents")
+                self.ctx.gdb_path = os.path.join(documents_dir, game_folder, "Data", "GDB.bin")
+                self.ctx.save_game_path()
+                logger.info(f"GDB path calculated as: {self.ctx.gdb_path}")
+            else:
+                logger.error(f"Path does not exist: {new_path}")
+                return False
         else:
-            logger.info("Game path not set")
+            # Display current paths
+            if self.ctx.game_path:
+                logger.info(f"Current game path: {self.ctx.game_path}")
+            else:
+                logger.info("Game path not set")
+            
+            if self.ctx.gdb_path:
+                logger.info(f"Current GDB path: {self.ctx.gdb_path}")
+            else:
+                logger.info("GDB path not set")
         return True
 
     def _cmd_toggle_msgs(self):
@@ -192,31 +221,49 @@ class SettlersContext(CommonContext):
             logger.error(f"Failed to reset SaveGames folder: {e}")
 
     def save_game_path(self):
-        """Save the game path to a JSON file."""
+        """Save both game path and GDB path to a JSON file."""
+        config = {}
         if self.game_path:
-            config = {
-                "game_path": self.game_path,
-            }
+            config["game_path"] = self.game_path
+        if self.gdb_path:
+            config["gdb_path"] = self.gdb_path
+        
+        if config:
             config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settlers_config.json")
             try:
                 with open(config_path, "w") as f:
                     json.dump(config, f)
-                logger.info(f"Saved game path to {config_path}")
+                logger.info(f"Saved paths to {config_path}")
             except Exception as e:
-                logger.error(f"Failed to save game path: {e}")
+                logger.error(f"Failed to save paths: {e}")
 
     def load_game_path(self):
-        """Load the game path from the JSON file."""
+        """Load game path from the JSON file. GDB path is calculated automatically."""
         config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settlers_config.json")
         try:
             if os.path.exists(config_path):
                 with open(config_path, "r") as f:
                     config = json.load(f)
+                
+                # Load game_path if it exists and is valid
                 if "game_path" in config and os.path.exists(config["game_path"]):
                     self.game_path = config["game_path"]
-                    logger.info(f"Loaded game path from {config_path}")
+                    logger.info(f"Loaded game path from {config_path}: {self.game_path}")
+                elif "game_path" in config:
+                    logger.warning(f"Saved game path does not exist: {config['game_path']}")
+            
+            # Calculate GDB path automatically from possible_folders (if not already set from config)
+            if not self.gdb_path:
+                game_folder = get_game_documents_folder()
+                documents_dir = os.path.join(os.path.expanduser("~"), "Documents")
+                self.gdb_path = os.path.join(documents_dir, game_folder, "Data", "GDB.bin")
+                
+                if os.path.exists(self.gdb_path):
+                    logger.info(f"Calculated GDB path: {self.gdb_path}")
+                else:
+                    logger.debug(f"GDB path calculated but does not exist yet: {self.gdb_path}")
         except Exception as e:
-            logger.error(f"Failed to load game path: {e}")
+            logger.error(f"Failed to load paths: {e}")
 
     def get_value(self, key):
         """Returns the value for a specific key."""
@@ -493,7 +540,8 @@ class SettlersContext(CommonContext):
         logger.info("Sent connection information to server")
         
     async def get_game_path(self) -> str:
-        """Ask for the game installation path if not already set."""
+        """Ask for the game installation path if not already set. GDB path is calculated automatically."""
+        # Get game installation path
         if not self.game_path:
             if self.ui:
                 self.ui.focus_textinput()
@@ -505,17 +553,29 @@ class SettlersContext(CommonContext):
                 logger.error(f"Path does not exist: {self.game_path}")
                 self.game_path = None
                 return await self.get_game_path()
-                
-            # Set GDB path
-            game_folder = get_game_documents_folder()
-            self.gdb_path = os.path.join(os.path.expanduser("~"), "Documents", game_folder, "Data", "GDB.bin")
             
-            # Check if GDB file exists
+            # Save the game path
+            self.save_game_path()
+        
+        # Calculate GDB path automatically from possible_folders
+        if not self.gdb_path:
+            game_folder = get_game_documents_folder()
+            documents_dir = os.path.join(os.path.expanduser("~"), "Documents")
+            self.gdb_path = os.path.join(documents_dir, game_folder, "Data", "GDB.bin")
+            
+            # Validate the GDB path
             if not os.path.exists(self.gdb_path):
                 logger.error(f"GDB file not found at: {self.gdb_path}")
-                self.game_path = None
+                logger.error(f"Please make sure the game folder '{game_folder}' exists in Documents")
+                self.gdb_path = None
                 return await self.get_game_path()
-                
+            
+            # Check if it's actually a file (not a directory)
+            if not os.path.isfile(self.gdb_path):
+                logger.error(f"GDB path is not a file: {self.gdb_path}")
+                self.gdb_path = None
+                return await self.get_game_path()
+            
             # Check file permissions
             try:
                 # Test read access
@@ -529,19 +589,27 @@ class SettlersContext(CommonContext):
             except (PermissionError, OSError) as e:
                 logger.error(f"Cannot access GDB file. Please run as administrator or check permissions: {self.gdb_path}")
                 logger.error(f"Error: {str(e)}")
-                self.game_path = None
+                self.gdb_path = None
                 return await self.get_game_path()
-
+            
+            # Save the GDB path
+            self.save_game_path()
         else:
-            # If game_path is already set, make sure gdb_path is also set
-            if not self.gdb_path:
-                game_folder = get_game_documents_folder()
-                self.gdb_path = os.path.join(os.path.expanduser("~"), "Documents", game_folder, "Data", "GDB.bin")
-                
             # Verify GDB file still exists and is accessible
             if not os.path.exists(self.gdb_path):
                 logger.error(f"GDB file not found at: {self.gdb_path}")
-                self.game_path = None
+                # Try to recalculate from possible_folders
+                game_folder = get_game_documents_folder()
+                documents_dir = os.path.join(os.path.expanduser("~"), "Documents")
+                self.gdb_path = os.path.join(documents_dir, game_folder, "Data", "GDB.bin")
+                
+                if not os.path.exists(self.gdb_path):
+                    self.gdb_path = None
+                    return await self.get_game_path()
+            
+            if not os.path.isfile(self.gdb_path):
+                logger.error(f"GDB path is not a file: {self.gdb_path}")
+                self.gdb_path = None
                 return await self.get_game_path()
                 
             try:
@@ -556,7 +624,7 @@ class SettlersContext(CommonContext):
             except (PermissionError, OSError) as e:
                 logger.error(f"Cannot access GDB file. Please run as administrator or check permissions: {self.gdb_path}")
                 logger.error(f"Error: {str(e)}")
-                self.game_path = None
+                self.gdb_path = None
                 return await self.get_game_path()
                 
         # Set file_path to gdb_path for compatibility with existing code
@@ -643,6 +711,7 @@ class SettlersContext(CommonContext):
 
         elif cmd == 'DataPackage':
             # Get items and locations from the DataPackage
+            #print(list(args["data"]["games"].keys()))
             game_data = args["data"]["games"][self.game]
             
             # Clear existing maps
@@ -708,7 +777,6 @@ class SettlersContext(CommonContext):
         class SettlersManager(GameManager):
             logging_pairs = [
                 ("Client", "Archipelago"),
-                ("GamePath", "Game Path")
             ]
             base_title = "Archipelago Settlers Heritage of Kings Client"
 
