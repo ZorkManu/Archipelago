@@ -24,9 +24,38 @@ GDBReader = None
 
 SYSTEM_MESSAGE_ID = 0
 
+def get_documents_folder():
+    """Get the real Documents folder path, even with OneDrive.
+    Uses Windows Shell API to get the actual Documents folder location."""
+    if sys.platform == "win32":
+        try:
+            import ctypes.wintypes
+            CSIDL_PERSONAL = 5  # My Documents
+            SHGFP_TYPE_CURRENT = 0  # Get current, not default value
+            
+            buf = ctypes.create_unicode_buffer(ctypes.wintypes.MAX_PATH)
+            result = ctypes.windll.shell32.SHGetFolderPathW(None, CSIDL_PERSONAL, None, SHGFP_TYPE_CURRENT, buf)
+            
+            if result == 0:  # SUCCESS
+                return buf.value
+            else:
+                # Fallback if API call fails
+                try:
+                    logger.warning("Failed to get Documents folder via Windows API, using fallback")
+                except NameError:
+                    pass  # logger not yet imported
+        except Exception as e:
+            try:
+                logger.warning(f"Error getting Documents folder via Windows API: {e}, using fallback")
+            except NameError:
+                pass  # logger not yet imported
+    
+    # Fallback for non-Windows or if API call fails
+    return os.path.join(os.path.expanduser("~"), "Documents")
+
 def get_game_documents_folder():
     """Find the game documents folder, checking both German and English folder names."""
-    documents_dir = os.path.join(os.path.expanduser("~"), "Documents")
+    documents_dir = get_documents_folder()
     possible_folders = [
         "DIE SIEDLER - DEdk",
         "THE SETTLERS - HoK",
@@ -81,7 +110,7 @@ class SettlersCommandProcessor(ClientCommandProcessor):
                 
                 # Recalculate GDB path
                 game_folder = get_game_documents_folder()
-                documents_dir = os.path.join(os.path.expanduser("~"), "Documents")
+                documents_dir = get_documents_folder()
                 self.ctx.gdb_path = os.path.join(documents_dir, game_folder, "Data", "GDB.bin")
                 self.ctx.save_game_path()
                 logger.info(f"GDB path calculated as: {self.ctx.gdb_path}")
@@ -161,7 +190,7 @@ class SettlersContext(CommonContext):
             # Build segment
             segment = f"{item_name}.{current_value}-"
             # Resolve Documents\<Game Folder>\SaveGames
-            documents_dir = os.path.join(os.path.expanduser("~"), "Documents")
+            documents_dir = get_documents_folder()
             game_folder = get_game_documents_folder()
             savegames_base = os.path.join(documents_dir, game_folder, "SaveGames")
             os.makedirs(savegames_base, exist_ok=True)
@@ -204,7 +233,7 @@ class SettlersContext(CommonContext):
         """Reset the SaveGames folder to __archipelago-"""
         try:
             # Resolve Documents\<Game Folder>\SaveGames
-            documents_dir = os.path.join(os.path.expanduser("~"), "Documents")
+            documents_dir = get_documents_folder()
             game_folder = get_game_documents_folder()
             savegames_base = os.path.join(documents_dir, game_folder, "SaveGames")
             os.makedirs(savegames_base, exist_ok=True)
@@ -255,7 +284,7 @@ class SettlersContext(CommonContext):
             # Calculate GDB path automatically from possible_folders (if not already set from config)
             if not self.gdb_path:
                 game_folder = get_game_documents_folder()
-                documents_dir = os.path.join(os.path.expanduser("~"), "Documents")
+                documents_dir = get_documents_folder()
                 self.gdb_path = os.path.join(documents_dir, game_folder, "Data", "GDB.bin")
                 
                 if os.path.exists(self.gdb_path):
@@ -560,7 +589,7 @@ class SettlersContext(CommonContext):
         # Calculate GDB path automatically from possible_folders
         if not self.gdb_path:
             game_folder = get_game_documents_folder()
-            documents_dir = os.path.join(os.path.expanduser("~"), "Documents")
+            documents_dir = get_documents_folder()
             self.gdb_path = os.path.join(documents_dir, game_folder, "Data", "GDB.bin")
             
             # Validate the GDB path
@@ -600,7 +629,7 @@ class SettlersContext(CommonContext):
                 logger.error(f"GDB file not found at: {self.gdb_path}")
                 # Try to recalculate from possible_folders
                 game_folder = get_game_documents_folder()
-                documents_dir = os.path.join(os.path.expanduser("~"), "Documents")
+                documents_dir = get_documents_folder()
                 self.gdb_path = os.path.join(documents_dir, game_folder, "Data", "GDB.bin")
                 
                 if not os.path.exists(self.gdb_path):
