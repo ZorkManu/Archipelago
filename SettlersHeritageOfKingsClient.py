@@ -57,6 +57,7 @@ def get_game_documents_folder():
     """Find the game documents folder, checking both German and English folder names."""
     documents_dir = get_documents_folder()
     possible_folders = [
+        "DIE SIEDLER - DEdK",
         "DIE SIEDLER - DEdk",
         "THE SETTLERS - HoK",
         "The Settlers - Heritage of Kings",
