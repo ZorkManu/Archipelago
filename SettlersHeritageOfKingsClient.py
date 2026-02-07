@@ -762,9 +762,11 @@ class SettlersContext(CommonContext):
 
         elif cmd == 'Retrieved':
             # Handle retrieved data from Get command
-                      # Re-initialize GDB with updated locations
-            if item_ids and location_ids:
+            # Re-initialize GDB with updated locations
+            if item_ids and location_ids and self.slot_data:
                 process_data(self)
+            elif not self.slot_data:
+                logger.warning("Cannot process data: slot_data not yet received. Waiting for Connected event.")
 
         elif cmd == 'ConnectionRefused':
             # Update tab visibility when connection is refused
@@ -899,7 +901,11 @@ class SettlersContext(CommonContext):
                     
             
                 logger.info(f"Starting Level {level_id}...")
-                process_data(self.ctx)
+                if self.ctx.slot_data:
+                    process_data(self.ctx)
+                else:
+                    logger.error("Cannot start level: slot_data not available. Please connect to server first.")
+                    return
                     
                 game_exe = os.path.join(self.ctx.game_path, "bin", "settlershok.exe")
                 os.chdir(os.path.dirname(game_exe))
@@ -1016,10 +1022,14 @@ def process_data(ctx: SettlersContext):
     ctx.reset_savegames_folder()
 
 def get_starting_hero(starting_hero):
-    heroId = 0
-    match starting_hero:
-        case "dario":
-            heroId = 1
+    """Convert starting_hero string to hero ID. Returns 0 if invalid."""
+    if not starting_hero:
+        return 0
+
+    hero_str = str(starting_hero).lower().strip()
+
+    heroId = 1
+    match hero_str:
         case "pilgrim":
             heroId = 2
         case "salim":
