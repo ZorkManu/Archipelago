@@ -12,6 +12,7 @@ import math
 from asyncio import StreamReader, StreamWriter
 from typing import List
 import shutil
+from Utils import get_settings
 
 import Utils
 from Utils import async_start
@@ -741,7 +742,6 @@ class SettlersContext(CommonContext):
 
         elif cmd == 'DataPackage':
             # Get items and locations from the DataPackage
-            #print(list(args["data"]["games"].keys()))
             game_data = args["data"]["games"][self.game]
             
             # Clear existing maps
@@ -867,37 +867,37 @@ class SettlersContext(CommonContext):
                     logger.error("Game path not set")
                     return
                     
-                lvlstring = "-extra2 -scewindow"
+                lvlstring = "-extra2 -scewindow -enhanced_sp"
                 if level_id == 1:
-                    lvlstring = '-extra2 -MAP:"01_thalgrund_archipelago" -scewindow'
+                    lvlstring = '-extra2 -MAP:"01_thalgrund_archipelago" -scewindow -enhanced_sp'
                 elif level_id == 2:
-                    lvlstring = '-extra2 -MAP:"02_villageattack_archipelago" -scewindow'
+                    lvlstring = '-extra2 -MAP:"02_villageattack_archipelago" -scewindow -enhanced_sp'
                 elif level_id == 3:
-                    lvlstring = '-extra2 -MAP:"04_crawford_archipelago" -scewindow'
+                    lvlstring = '-extra2 -MAP:"04_crawford_archipelago" -scewindo -enhanced_spw'
                 elif level_id == 4:
-                    lvlstring = '-extra2 -MAP:"06_cleycourt_archipelago" -scewindow'
+                    lvlstring = '-extra2 -MAP:"06_cleycourt_archipelago" -scewindow -enhanced_sp'
                 elif level_id == 5:
-                    lvlstring = '-extra2 -MAP:"07_flood_archipelago" -scewindow'
+                    lvlstring = '-extra2 -MAP:"07_flood_archipelago" -scewindow -enhanced_sp'
                 elif level_id == 6:
-                    lvlstring = '-extra2 -MAP:"08_barmecia_archipelago" -scewindow'
+                    lvlstring = '-extra2 -MAP:"08_barmecia_archipelago" -scewindow -enhanced_sp'
                 elif level_id == 7:
-                    lvlstring = '-extra2 -MAP:"10_folklung_archipelago" -scewindow'
+                    lvlstring = '-extra2 -MAP:"10_folklung_archipelago" -scewindow -enhanced_sp'
                 elif level_id == 8:
-                    lvlstring = '-extra2 -MAP:"11_norfolk_archipelago" -scewindow'
+                    lvlstring = '-extra2 -MAP:"11_norfolk_archipelago" -scewindow -enhanced_sp'
                 elif level_id == 9:
-                    lvlstring = '-extra2 -MAP:"12_kaloix_archipelago" -scewindow'
+                    lvlstring = '-extra2 -MAP:"12_kaloix_archipelago" -scewindow -enhanced_sp'
                 elif level_id == 10:
-                    lvlstring = '-extra2 -MAP:"13_plague_archipelago" -scewindow'
+                    lvlstring = '-extra2 -MAP:"13_plague_archipelago" -scewindow -enhanced_sp'
                 elif level_id == 11:
-                    lvlstring = '-extra2 -MAP:"15_oldkingscastle_archipelago" -scewindow'
+                    lvlstring = '-extra2 -MAP:"15_oldkingscastle_archipelago" -scewindow -enhanced_sp'
                 elif level_id == 12:
-                    lvlstring = '-extra2 -MAP:"17_cloudymountains_archipelago" -scewindow'
+                    lvlstring = '-extra2 -MAP:"17_cloudymountains_archipelago" -scewindow -enhanced_sp'
                 elif level_id == 13:
-                    lvlstring = '-extra2 -MAP:"18_evelance_archipelago" -scewindow'
+                    lvlstring = '-extra2 -MAP:"18_evelance_archipelago" -scewindow -enhanced_sp'
                 elif level_id == 14:
-                    lvlstring = '-extra2 -MAP:"19_wasteland_archipelago" -scewindow'
+                    lvlstring = '-extra2 -MAP:"19_wasteland_archipelago" -scewindow -enhanced_sp'
                 elif level_id == 15:
-                    lvlstring = '-extra2 -MAP:"20_battleofevelance_archipelago" -scewindow'
+                    lvlstring = '-extra2 -MAP:"20_battleofevelance_archipelago" -scewindow -enhanced_sp'
                     
             
                 logger.info(f"Starting Level {level_id}...")
@@ -1128,8 +1128,8 @@ if __name__ == '__main__':
     # Text Mode to use !hint and such with games that have no text entry
     Utils.init_logging("SettlersClient")
 
-    options = Utils.get_options()
-    DISPLAY_MSGS = options.get("settlers_options", {}).get("display_msgs", True)
+    settings = get_settings()
+    DISPLAY_MSGS = settings.get("settlers_options", {}).get("display_msgs", True)
 
     async def main(args):
         ctx = SettlersContext(args.connect, args.password)
