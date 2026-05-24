@@ -23,6 +23,21 @@ from NetUtils import NetworkItem, NetworkPlayer, NetworkSlot, SlotType
 # GDB reader will be imported after game path is set
 GDBReader = None
 
+_AP_GDB_CONFIG_KEYS = frozenset({
+    "starting_hero",
+    "difficulty",
+    "player_color",
+    "game_speed",
+    "progression",
+})
+
+
+def get_ap_gdb_allowed_keys() -> frozenset[str]:
+    """Keys the Archipelago client is allowed to create or update in GDB.bin."""
+    from worlds.SettlersHeritageOfKings.Locations import location_table
+    from worlds.SettlersHeritageOfKings.Items import item_table
+    return frozenset(location_table) | frozenset(item_table) | _AP_GDB_CONFIG_KEYS
+
 SYSTEM_MESSAGE_ID = 0
 
 def get_documents_folder():
@@ -72,6 +87,25 @@ def get_game_documents_folder():
     
     # If none exist, return the German version as default (will be created)
     return "DIE SIEDLER - DEdk"
+
+
+def get_client_base_dir() -> str:
+    """Return a stable client directory for local config files.
+    Handles frozen/packaged launches where __file__ may point into a zip."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+
+    file_path = os.path.abspath(__file__)
+    if ".zip" in file_path.lower():
+        if sys.argv and sys.argv[0]:
+            return os.path.dirname(os.path.abspath(sys.argv[0]))
+        return os.getcwd()
+
+    return os.path.dirname(file_path)
+
+
+def get_config_path() -> str:
+    return os.path.join(get_client_base_dir(), "settlers_config.json")
 
 CONNECTION_TIMING_OUT_STATUS = "Connection timing out. Please restart your game, then restart connector_settlers.lua"
 CONNECTION_REFUSED_STATUS = "Connection Refused. Please start your game and make sure connector_settlers.lua is running"
@@ -162,7 +196,6 @@ class SettlersContext(CommonContext):
         self.missing_locations = set()
         self.locations_checked = []  # Changed from set to list
         self.items_received = []
-        self.offset_50 = 0x0000005E
         self.savegames_appended_until = 0  # number of received items already reflected in SaveGames folder name
         
         # Load saved game path if it exists
@@ -260,7 +293,7 @@ class SettlersContext(CommonContext):
             config["gdb_path"] = self.gdb_path
         
         if config:
-            config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settlers_config.json")
+            config_path = get_config_path()
             try:
                 with open(config_path, "w") as f:
                     json.dump(config, f)
@@ -270,7 +303,7 @@ class SettlersContext(CommonContext):
 
     def load_game_path(self):
         """Load game path from the JSON file. GDB path is calculated automatically."""
-        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settlers_config.json")
+        config_path = get_config_path()
         try:
             if os.path.exists(config_path):
                 with open(config_path, "r") as f:
@@ -296,236 +329,367 @@ class SettlersContext(CommonContext):
         except Exception as e:
             logger.error(f"Failed to load paths: {e}")
 
+    @staticmethod
+    def _get_archipelago_bounds(content: bytes) -> typing.Optional[tuple[int, int, int]]:
+        """
+        Return:
+            sortable_start = Bereich ab dem sortiert werden darf
+            data_end       = Ende der sortierbaren Section
+            last_marker    = Position des letzten FF FD FF FD
+        """
+
+        marker = b'\xff\xfd\xff\xfd'
+
+        last_ff_fd = content.rfind(marker)
+        if last_ff_fd == -1:
+            return None
+
+        second_last_ff_fd = content.rfind(marker, 0, last_ff_fd)
+        if second_last_ff_fd == -1:
+            return None
+
+        sortable_start = second_last_ff_fd + len(marker)
+
+        return sortable_start, last_ff_fd, last_ff_fd
+
+    @staticmethod
+    def _find_numeric_value_pattern_offset(entry: bytes) -> int:
+        """Find 00 ?? 00 02 00 00 00 metadata inside an entry."""
+        for i in range(len(entry) - 6):
+            if (
+                entry[i] == 0x00
+                and entry[i + 2] == 0x00
+                and entry[i + 3] == 0x02
+                and entry[i + 4] == 0x00
+                and entry[i + 5] == 0x00
+                and entry[i + 6] == 0x00
+            ):
+                return i
+        return -1
+
+    @staticmethod
+    def _read_numeric_value(entry: bytes, value_pos: int) -> int:
+        value_start = value_pos + 7
+        value_end = entry.find(b'\x00', value_start)
+        if value_end == -1:
+            return 0
+        value_bytes = entry[value_start:value_end]
+        if not value_bytes:
+            return 0
+        try:
+            return int(value_bytes.decode('latin-1'))
+        except ValueError:
+            return 0
+
+    @staticmethod
+    def _build_new_entry(key: str, value: int) -> bytes:
+        """Create a new archipelago entry using the game's common metadata pattern."""
+        key_bytes = key.encode('latin-1')
+        value_pattern = bytearray([0x00, 0x03, 0x00, 0x02, 0x00, 0x00, 0x00])
+        value_pattern.extend(str(value).encode('latin-1'))
+        value_pattern.append(0x00)
+        return bytes([len(key) + 1, 0, 0, 0]) + key_bytes + value_pattern
+
+    @staticmethod
+    def _patch_entry_value(entry: bytes, value: int) -> typing.Optional[bytes]:
+        """Return entry bytes with an updated numeric value, preserving metadata layout."""
+        entry_buf = bytearray(entry)
+        value_pos = SettlersContext._find_numeric_value_pattern_offset(entry_buf)
+        if value_pos == -1:
+            return None
+
+        value_start = value_pos + 7
+        value_end = entry_buf.find(0x00, value_start)
+        if value_end == -1:
+            return None
+
+        value_bytes = str(max(0, int(value))).encode('latin-1')
+        return bytes(entry_buf[:value_start] + value_bytes + entry_buf[value_end:])
+
+    def _parse_all_entries(self, content: bytes, data_start: int, data_end: int) -> dict[str, bytes]:
+        """Parse archipelago entries using exact key bytes (never substring matching)."""
+        entries: dict[str, bytes] = {}
+        pos = data_start
+
+        while pos < data_end:
+            while pos < data_end and content[pos] == 0xff:
+                pos += 1
+
+            if pos >= data_end:
+                break
+
+            length_byte = content[pos]
+            if length_byte == 0 or pos + 4 >= data_end:
+                pos += 1
+                continue
+
+            pattern_start = pos + 4
+            next_marker = content.find(b'\xff\xfd', pattern_start)
+            if next_marker == -1 or next_marker > data_end:
+                pos += 1
+                continue
+
+            key_length = length_byte - 1
+            key = content[pattern_start:pattern_start + key_length].decode('latin-1')
+            if key in entries:
+                logger.warning(f"Duplicate GDB entry '{key}' found while parsing; keeping first occurrence")
+            else:
+                entries[key] = bytes(content[pos:next_marker])
+
+            pos = next_marker + 2
+
+        return entries
+
+    @staticmethod
+    def _is_archipelago_sorted(keys: list[str]) -> bool:
+        """The game expects case-sensitive ASCII key order (B before b)."""
+        return keys == sorted(keys)
+
+    @staticmethod
+    def _rebuild_archipelago_section(
+        content: bytearray,
+        data_start: int,
+        last_ff_fd: int,
+        entries: dict[str, bytes],
+    ) -> bytearray:
+        """Rebuild archipelago data in ASCII alphabetical order (required by the game)."""
+        sorted_keys = sorted(entries.keys())
+        new_section = bytearray()
+
+        for index, key in enumerate(sorted_keys):
+            new_section.extend(entries[key])
+            if index < len(sorted_keys) - 1:
+                new_section.extend(b'\xff\xfd')
+
+        new_section.extend(b'\xff\xfd\xff\xfd')
+        tail = content[last_ff_fd + 4:] if last_ff_fd + 4 < len(content) else b''
+        return content[:data_start] + new_section + tail
+
+    def _find_entry_for_key(self, content: bytes, data_start: int, data_end: int, key_bytes: bytes) -> typing.Optional[tuple[int, int]]:
+        """Return (entry_start, entry_end) where entry_end is the FF FD marker position."""
+        pos = data_start
+        while pos < data_end:
+            try:
+                while pos < data_end and content[pos] == 0xff:
+                    pos += 1
+
+                if pos >= data_end:
+                    break
+
+                length_byte = content[pos]
+                if length_byte == 0 or pos + 4 >= data_end:
+                    pos += 1
+                    continue
+
+                pattern_start = pos + 4
+                next_marker = content.find(b'\xff\xfd', pattern_start)
+                if next_marker == -1 or next_marker > data_end:
+                    pos += 1
+                    continue
+
+                key_length = length_byte - 1
+                entry_key_bytes = content[pattern_start:pattern_start + key_length]
+                if entry_key_bytes == key_bytes:
+                    return pos, next_marker
+
+                pos = next_marker + 2
+            except Exception:
+                pos += 1
+        return None
+
+
+
+    @staticmethod
+    def _update_gdb_entry_count(content: bytearray, entry_count: int) -> bytearray:
+        """
+        Updates the global GDB-Entry-Counter.
+        """
+
+        header_marker = b'\xFF\xFF\xFF\xFF\xFF\xFF\x00\x00'
+
+        pos = content.find(header_marker)
+        if pos == -1:
+            logger.warning("Could not locate GDB entry counter header")
+            return content
+
+        count_pos = pos + len(header_marker)
+
+        content[count_pos:count_pos + 4] = int(entry_count).to_bytes(
+            4,
+            byteorder='little',
+            signed=False,
+        )
+
+        return content
+
+    @staticmethod
+    def _read_gdb_entry_count(content: bytes) -> int:
+        """
+        Counts GDB Entries.
+        """
+
+        header_marker = b'\xFF\xFF\xFF\xFF\xFF\xFF\x00\x00'
+
+        pos = content.find(header_marker)
+        if pos == -1:
+            return 0
+
+        count_pos = pos + len(header_marker)
+
+        return int.from_bytes(
+            content[count_pos:count_pos + 4],
+            byteorder='little',
+            signed=False,
+        )
+
+    def apply_gdb_updates(self, updates: dict[str, int]) -> None:
+        """Apply multiple GDB value updates in a single read/write pass."""
+        if not self.gdb_path or not updates:
+            return
+
+        allowed_keys = get_ap_gdb_allowed_keys()
+        filtered_updates = {
+            key: value
+            for key, value in updates.items()
+            if key in allowed_keys
+        }
+        skipped = set(updates) - set(filtered_updates)
+        for key in sorted(skipped):
+            logger.debug(f"Ignoring non-AP GDB key '{key}'")
+
+        if not filtered_updates:
+            return
+
+        try:
+            with open(self.gdb_path, 'rb') as f:
+                content = bytearray(f.read())
+
+            bounds = self._get_archipelago_bounds(content)
+            if not bounds:
+                logger.error("Error: Archipelago section markers not found in GDB")
+                return
+
+            data_start, data_end, last_ff_fd = bounds
+            entries = self._parse_all_entries(content, data_start, data_end)
+
+            original_total_count = self._read_gdb_entry_count(content)
+
+            original_visible_entries = len(entries)
+
+            internal_object_count = original_total_count - original_visible_entries
+
+            if internal_object_count < 0:
+                logger.warning(
+                    "Invalid internal object count detected, fallback to 0"
+                )
+                internal_object_count = 0
+            
+            changed = False
+            needs_sort = not self._is_archipelago_sorted(list(entries.keys()))
+
+            for key, raw_value in filtered_updates.items():
+                value = max(0, int(raw_value))
+
+                if key in entries:
+                    patched_entry = self._patch_entry_value(entries[key], value)
+                    if patched_entry is None:
+                        logger.warning(f"Skipping GDB update for '{key}': unsupported value format")
+                        continue
+                    if patched_entry != entries[key]:
+                        entries[key] = patched_entry
+                        changed = True
+                    continue
+
+                entries[key] = self._build_new_entry(key, value)
+                changed = True
+                needs_sort = True
+                logger.info(f"Added new GDB entry for '{key}'")
+
+            if changed or needs_sort:
+
+                if data_start <= 0 or data_start >= last_ff_fd:
+                    logger.error("Invalid sortable GDB range detected")
+                    return
+
+                content = self._rebuild_archipelago_section(
+                    content,
+                    data_start,
+                    last_ff_fd,
+                    entries
+                )
+
+                entry_count = len(entries) + internal_object_count
+
+                content = self._update_gdb_entry_count(
+                    content,
+                    entry_count
+                )
+
+                with open(self.gdb_path, 'wb') as f:
+                    f.write(content)
+        except Exception as e:
+            logger.error(f"Error applying GDB updates: {e}")
+
     def get_value(self, key):
         """Returns the value for a specific key."""
         try:
-            # Read the file content
             with open(self.gdb_path, 'rb') as f:
                 content = f.read()
-            
-            # Find the last FF FD FF FD
-            last_ff_fd = content.rfind(b'\xff\xfd\xff\xfd')
-            if last_ff_fd == -1:
-                return 0
-                
-            # Find the second to last FF FD FF FD
-            second_last_ff_fd = content.rfind(b'\xff\xfd\xff\xfd', 0, last_ff_fd)
-            if second_last_ff_fd == -1:
-                return 0
-            
-            # Search only in the area between the second to last and the last FF FD FF FD
-            search_content = content[second_last_ff_fd:last_ff_fd]
-            
-            key_bytes = key.encode('latin-1')
-            key_pos = search_content.find(key_bytes)
-            
-            if key_pos != -1:
-                # Key found, search for the pattern 00 03 00 02 00 00 00
-                pattern = bytes([0x00, 0x03, 0x00, 0x02, 0x00, 0x00, 0x00])
-                pattern_pos = search_content.find(pattern, key_pos + len(key_bytes))
 
-                if pattern_pos != -1:
-                    # Pattern found, the value is the next byte
-                    # The value is stored as 0x30 + value, so we need to subtract 0x30
-                    value_byte = search_content[pattern_pos + 7]
-                    value = value_byte - 0x30
-                    return value
-            
-            return 0
-            
+            bounds = self._get_archipelago_bounds(content)
+            if not bounds:
+                return 0
+
+            data_start, data_end, _ = bounds
+            key_bytes = key.encode('latin-1')
+            entry_bounds = self._find_entry_for_key(content, data_start, data_end, key_bytes)
+            if not entry_bounds:
+                return 0
+
+            entry_start, entry_end = entry_bounds
+            entry = content[entry_start:entry_end]
+            value_pos = self._find_numeric_value_pattern_offset(entry)
+            if value_pos == -1:
+                return 0
+            return self._read_numeric_value(entry, value_pos)
         except Exception as e:
             logger.error(f"Error reading file: {e}")
             return 0
-        
+
     def set_value(self, key, value):
         """Sets a value for a specific key."""
+        self.apply_gdb_updates({key: value})
+
+    def repair_gdb_sort_order(self) -> bool:
+        """Rebuild archipelago entry order without changing values (recovery helper)."""
+        if not self.gdb_path:
+            return False
+
         try:
-            # Read the file content
             with open(self.gdb_path, 'rb') as f:
                 content = bytearray(f.read())
-            
-            # Find the last FF FD FF FD marker
-            last_ff_fd = content.rfind(b'\xff\xfd\xff\xfd')
-            if last_ff_fd == -1:
-                logger.error("Error: No FF FD FF FD marker found")
-                return
-                
-            # Find the second to last FF FD FF FD
-            second_last_ff_fd = content.rfind(b'\xff\xfd\xff\xfd', 0, last_ff_fd)
-            if second_last_ff_fd == -1:
-                logger.error("Error: No second FF FD FF FD marker found")
-                return
-                
-            # The data section starts 8 bytes after the second to last FF FD FF FD
-            data_start = second_last_ff_fd + 4
-            
-            # Find the next valid entry after data_start
-            pos = data_start
-            while pos < last_ff_fd:
-                if content[pos] > 0:  # Found a non-zero byte
-                    break
-                pos += 1
-            
-            # Clean up the area between data_start and the next valid entry
-            content = content[:data_start] + content[pos:]
-            last_ff_fd = content.rfind(b'\xff\xfd\xff\xfd')  # Update last_ff_fd position
-            data_end = last_ff_fd
-            
-            # First, check if the key exists and get its position
-            key_bytes = key.encode('latin-1')
-            pos = data_start
-            entry_found = False
-            entry_start = 0
-            entry_end = 0
-            
-            while pos < data_end:
-                try:
-                    # Skip any invalid bytes until we find a valid entry start
-                    while pos < data_end and content[pos] == 0xff:
-                        pos += 1
-                        
-                    if pos >= data_end:
-                        break
-                        
-                    # Each entry should start with a length byte followed by 3 null bytes
-                    length_byte = content[pos]
-                    if length_byte == 0 or pos + 4 >= data_end:
-                        pos += 1
-                        continue
-                        
-                    # Skip the 3 null bytes
-                    pattern_start = pos + 4
-                    
-                    # Find the next FF FD marker
-                    next_marker = content.find(b'\xff\xfd', pattern_start)
-                    if next_marker == -1 or next_marker > data_end:
-                        pos += 1
-                        continue
-                        
-                    # Extract the key bytes
-                    key_length = length_byte - 1  # Subtract 1 for the null terminator
-                    entry_key_bytes = content[pattern_start:pattern_start + key_length]
-                    
-                    # Compare the key bytes directly
-                    if entry_key_bytes == key_bytes:
-                        entry_found = True
-                        entry_start = pos
-                        entry_end = next_marker + 2
-                        break
-                        
-                    pos = next_marker + 2
-                        
-                except Exception as e:
-                    logger.error(f"Error parsing entry at position {pos}: {e}")
-                    pos += 1
-            
-            if entry_found:
-                # Find the value pattern in the existing entry
-                value_pattern = bytes([0x00, 0x03, 0x00, 0x02, 0x00, 0x00, 0x00])
-                value_pos = content[entry_start:entry_end].find(value_pattern)
-                
-                if value_pos != -1:
-                    # Update only the value byte
-                    content[entry_start + value_pos + 7] = 0x30 + value
-                    # Write the changes back to the file
-                    with open(self.gdb_path, 'wb') as f:
-                        f.write(content)
-                    return
-            
-            # If we get here, the key doesn't exist, so create a new entry
-            value_pattern = bytearray([0x00, 0x03, 0x00, 0x02, 0x00, 0x00, 0x00, 0x30 + value, 0x00])
-            new_entry = bytes([len(key) + 1, 0, 0, 0]) + key_bytes + value_pattern
-            
-            # Find all valid entries for sorting
-            entries = []
-            pos = data_start
-            
-            while pos < data_end:
-                try:
-                    # Skip any invalid bytes until we find a valid entry start
-                    while pos < data_end and content[pos] == 0xff:
-                        pos += 1
-                        
-                    if pos >= data_end:
-                        break
-                        
-                    # Each entry should start with a length byte followed by 3 null bytes
-                    length_byte = content[pos]
-                    if length_byte == 0 or pos + 4 >= data_end:
-                        pos += 1
-                        continue
-                        
-                    # Skip the 3 null bytes
-                    pattern_start = pos + 4
-                    
-                    # Find the next FF FD marker
-                    next_marker = content.find(b'\xff\xfd', pattern_start)
-                    if next_marker == -1 or next_marker > data_end:
-                        pos += 1
-                        continue
-                        
-                    # Extract everything between pattern_start and next_marker
-                    entry_data = content[pattern_start:next_marker]
-                    
-                    # Try to decode as Latin-1 and remove any control characters
-                    try:
-                        entry_key = ''.join(chr(b) for b in entry_data if b >= 32 and b < 127).strip()
-                        if entry_key:  # Only add non-empty keys
-                            # Include the entire entry in the tuple, but without the FF FD marker
-                            entry_content = content[pos:next_marker]
-                            entries.append((entry_key, entry_content))
-                    except:
-                        pass
-                        
-                    pos = next_marker + 2
-                        
-                except Exception as e:
-                    logger.error(f"Error parsing entry at position {pos}: {e}")
-                    pos += 1
-            
-            # Add the new entry to the list
-            entries.append((key, new_entry))
-            
-            # Sort all entries alphabetically
-            entries.sort(key=lambda x: x[0].lower())
-            
-            # Rebuild the entire data section in sorted order
-            new_content = bytearray(content[:data_start])
-            
-            # Add all entries in sorted order, with FF FD markers between them
-            for i, (_, entry_content) in enumerate(entries):
-                new_content.extend(entry_content)
-                if i < len(entries) - 1:  # Add FF FD marker between entries
-                    new_content.extend(b'\xff\xfd')
-            
-            # Add the final FF FD FF FD marker
-            new_content.extend(b'\xff\xfd\xff\xfd')
-            
-            # Add any remaining content after the last FF FD FF FD
-            if last_ff_fd + 4 < len(content):
-                new_content.extend(content[last_ff_fd + 4:])
-            
-            # Increment the counter only for new entries
-            self.increment_counter(new_content)
-            
-            # Write the changes back to the file
-            with open(self.gdb_path, 'wb') as f:
-                f.write(new_content)
-            
-        except Exception as e:
-            logger.error(f"Error writing to file: {e}")
 
-    def increment_counter(self, content):
-        """Increments the counter at offset 0x0000005E and checks if the next digit needs to be incremented."""
-        if self.offset_50 + 4 <= len(content):
-            current_value = int.from_bytes(content[self.offset_50:self.offset_50+4], byteorder='little', signed=True)
-            new_value = current_value + 1
-            content[self.offset_50:self.offset_50+4] = new_value.to_bytes(4, byteorder='little', signed=True)
-            
-            # Check if the digit is full (e.g., if the value reaches 255)
-            if new_value >= 255:
-                self.offset_50 += 4  # Go to the next digit
-                logger.info(f"Counter at offset {self.offset_50} incremented.")
+            bounds = self._get_archipelago_bounds(content)
+            if not bounds:
+                logger.error("Error: Archipelago section markers not found in GDB")
+                return False
+
+            data_start, data_end, last_ff_fd = bounds
+            entries = self._parse_all_entries(content, data_start, data_end)
+
+            original_total_count = self._read_gdb_entry_count(content)
+            if self._is_archipelago_sorted(list(entries.keys())):
+                return True
+
+            content = self._rebuild_archipelago_section(content, data_start, last_ff_fd, entries)
+
+            with open(self.gdb_path, 'wb') as f:
+                f.write(content)
+            logger.info("Rebuilt GDB archipelago section in ASCII sorted order")
+            return True
+        except Exception as e:
+            logger.error(f"Error repairing GDB sort order: {e}")
+            return False
 
     async def server_auth(self, password_requested: bool = False):
         if password_requested and not self.password:
@@ -873,7 +1037,7 @@ class SettlersContext(CommonContext):
                 elif level_id == 2:
                     lvlstring = '-extra2 -MAP:"02_villageattack_archipelago" -scewindow -enhanced_sp'
                 elif level_id == 3:
-                    lvlstring = '-extra2 -MAP:"04_crawford_archipelago" -scewindo -enhanced_spw'
+                    lvlstring = '-extra2 -MAP:"04_crawford_archipelago" -scewindow -enhanced_sp'
                 elif level_id == 4:
                     lvlstring = '-extra2 -MAP:"06_cleycourt_archipelago" -scewindow -enhanced_sp'
                 elif level_id == 5:
@@ -908,10 +1072,20 @@ class SettlersContext(CommonContext):
                     return
                     
                 game_exe = os.path.join(self.ctx.game_path, "bin", "settlershok.exe")
-                os.chdir(os.path.dirname(game_exe))
-                
+                if not os.path.exists(game_exe):
+                    logger.error(f"Cannot start level: game executable not found at {game_exe}")
+                    return
                 command = f'"{game_exe}" {lvlstring}'
-                subprocess.Popen(command, shell=True)
+                logger.info(f"Launch command: {command}")
+                try:
+                    process = subprocess.Popen(
+                        command,
+                        cwd=os.path.dirname(game_exe),
+                        shell=True,
+                    )
+                    logger.info(f"Game process started (PID {process.pid})")
+                except Exception as e:
+                    logger.error(f"Failed to start game process: {e}")
 
             def update_tab_visibility(self):
                 # Update tab visibility based on connection status
@@ -969,22 +1143,19 @@ def process_data(ctx: SettlersContext):
             else:
                 item_counts[item.item] = 1
 
-    # Initialize all locations in GDB based on server data
-    for location_id in location_ids.values():
-        try:
-            location_name = locations_by_id.get(location_id)
-            if location_name:
-                # Set value to 1 if location is checked on server, 0 otherwise
-                value = 1 if location_id in ctx.locations_checked else 0
-                ctx.set_value(location_name, value)
-        except Exception as e:
-            logger.error(f"Error initializing location {location_name}: {e}")
+    updates: dict[str, int] = {}
 
-    ctx.set_value("starting_hero",get_starting_hero(ctx.slot_data["starting_hero"]))
+    # Only mark server-checked locations as 1; never overwrite in-game progress with 0
+    for location_id in location_ids.values():
+        location_name = locations_by_id.get(location_id)
+        if location_name and location_id in ctx.locations_checked:
+            updates[location_name] = 1
+
+    updates["starting_hero"] = get_starting_hero(ctx.slot_data["starting_hero"])
     difficulty = ctx.slot_data["difficulty"]
-    ctx.set_value("difficulty",difficulty)
-    ctx.set_value("player_color",ctx.slot_data["player_color"])
-    ctx.set_value("game_speed",ctx.slot_data["game_speed"])
+    updates["difficulty"] = difficulty
+    updates["player_color"] = ctx.slot_data["player_color"]
+    updates["game_speed"] = ctx.slot_data["game_speed"]
 
     # Progression Difficulty Balancing
     if ctx.slot_data["progression_difficulty"] == 1:
@@ -998,25 +1169,28 @@ def process_data(ctx: SettlersContext):
     else:
         progression_status = 0
 
-    ctx.set_value("progression",progression_status)
+    updates["progression"] = progression_status
 
-    # Initialize all items in GDB based on server data
+    allowed_keys = get_ap_gdb_allowed_keys()
+
+    # Only sync received AP items (>0). Never mass-write 0 into the GDB.
     for item_id in item_ids.values():
-        try:
-            item_name = items_by_id.get(item_id)
-            if item_name:
-                # Get base count from received items
-                value = item_counts.get(item_id, 0)
+        item_name = items_by_id.get(item_id)
+        if not item_name or item_name not in allowed_keys:
+            continue
 
-                # Add +1 if item is in starting_unit
-                if "starting_unit" in ctx.slot_data and ctx.slot_data["starting_unit"] != "disabled":
-                    unit_name = f"progressive_{ctx.slot_data['starting_unit']}"
-                    if item_name == unit_name:
-                        value += 1
+        value = item_counts.get(item_id, 0)
 
-                ctx.set_value(item_name, value)
-        except Exception as e:
-            logger.error(f"Error initializing item {item_name}: {e}")
+        # Add +1 if item is in starting_unit
+        if "starting_unit" in ctx.slot_data and ctx.slot_data["starting_unit"] != "disabled":
+            unit_name = f"progressive_{ctx.slot_data['starting_unit']}"
+            if item_name == unit_name:
+                value += 1
+
+        if value > 0:
+            updates[item_name] = value
+
+    ctx.apply_gdb_updates(updates)
 
     # Reset SaveGames folder after saving to GDB
     ctx.reset_savegames_folder()
