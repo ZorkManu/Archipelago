@@ -15,7 +15,7 @@ item_table = {
     "better_training_archery": SettlersItemData(code=101, name="Better Training Archery", type=ItemClassification.useful),
     "better_training_barracks": SettlersItemData(code=102, name="Better Training Barracks", type=ItemClassification.useful),
     "shoeing": SettlersItemData(code=103, name="Shoeing", type=ItemClassification.useful),
-    "enable_militia": SettlersItemData(code=104, name="Enable Militia"),
+    ##"enable_militia": SettlersItemData(code=104, name="Enable Militia"),
     "masonry": SettlersItemData(code=105, name="Masonry", type=ItemClassification.useful),
     "tracking": SettlersItemData(code=106, name="Tracking"),
 
@@ -44,10 +44,10 @@ item_table = {
     "progressive_cannon_damage": SettlersItemData(code=127, name="Progressive Cannon Damage", type=ItemClassification.useful, quantity=2),
     "progressive_rifle_damage": SettlersItemData(code=128, name="Progressive Rifle Damage", type=ItemClassification.useful, quantity=2),
 
-    "progressive_weathertech": SettlersItemData(code=129, name="Progressive Weathertech", type=ItemClassification.progression, quantity=2),
+    "progressive_weathertech": SettlersItemData(code=129, name="Progressive Weathertech", type=ItemClassification.progression, quantity=1),
     "progressive_village_center": SettlersItemData(code=130, name="Progressive Village Center", quantity=3),
 
-    "progressive_dario": SettlersItemData(code=131, name="Progressive Dario", type=ItemClassification.progression, quantity=3),
+    "progressive_dario": SettlersItemData(code=131, name="Progressive Dario", type=ItemClassification.useful, quantity=3),
     "erec": SettlersItemData(code=132, name="Erec", type=ItemClassification.useful),
     "helias": SettlersItemData(code=133, name="Helias", type=ItemClassification.progression),
     "ari": SettlersItemData(code=134, name="Ari", type=ItemClassification.progression),
@@ -66,6 +66,6 @@ item_table = {
     "starting_stone": SettlersItemData(code=146, name="Starting Stone"),
     "starting_iron": SettlersItemData(code=147, name="Starting Iron"),
     "starting_sulfur": SettlersItemData(code=148, name="Starting Sulfur"),
-    "additional_attraction": SettlersItemData(code=149, name="Additional Attraction"),
-    "additional_motivation": SettlersItemData(code=150, name="Additional Motivation"),
+    ##"additional_attraction": SettlersItemData(code=149, name="Additional Attraction"),
+    ##"additional_motivation": SettlersItemData(code=150, name="Additional Motivation"),
 }

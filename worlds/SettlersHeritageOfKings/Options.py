@@ -72,7 +72,7 @@ class ProgressionDifficulty(Toggle):
 class SettlersGameOptions(PerGameCommonOptions):
     starting_hero: StartingHero
     starting_unit: StartingUnit
-    difficulty: Difficulty
-    progression_difficulty: ProgressionDifficulty
     player_color: PlayerColor
+    difficulty: Difficulty
     game_speed: GameSpeed
+    progression_difficulty: ProgressionDifficulty
