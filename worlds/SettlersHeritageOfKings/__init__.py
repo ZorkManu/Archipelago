@@ -107,7 +107,7 @@ class SettlersWorld(World):
         starting_hero = self.options.starting_hero.current_key
 
         self.multiworld.completion_condition[player] = (
-            lambda state: state.has("battleofevelance_victory", player, state.location_checks)
+            lambda state: state.can_reach_location("battleofevelance_victory", player)
         )
 
         for index, region_name in enumerate(REGION_ORDER):
@@ -167,6 +167,8 @@ class SettlersWorld(World):
             "progression_difficulty": self.options.progression_difficulty.value,
             "player_color": self.options.player_color.value,
             "game_speed": self.options.game_speed.value,
+            "control_allies": self.options.control_allies.value,
+            "death_link": self.options.death_link.value,
         }
 
     def create_filler(self) -> SettlersItem:

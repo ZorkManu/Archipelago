@@ -68,6 +68,15 @@ class ProgressionDifficulty(Toggle):
     """If enabled increases the difficulty if more items are collected."""
     display_name = "Progression Difficulty"
 
+class ControlAllies(Toggle):
+    """If enabled take control of allies on the map"""
+    display_name = "Control Allies"
+
+class DeathLink(Toggle):
+    """Whenever you lose a certain ammount of units send a death through Death Link.
+    A send Death result will result in an activated trap"""
+    display_name = "Death Link"
+
 @dataclass
 class SettlersGameOptions(PerGameCommonOptions):
     starting_hero: StartingHero
@@ -76,3 +85,5 @@ class SettlersGameOptions(PerGameCommonOptions):
     difficulty: Difficulty
     game_speed: GameSpeed
     progression_difficulty: ProgressionDifficulty
+    control_allies: ControlAllies
+    death_link: DeathLink
