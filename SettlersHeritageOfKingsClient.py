@@ -29,6 +29,8 @@ _AP_GDB_CONFIG_KEYS = frozenset({
     "player_color",
     "game_speed",
     "progression",
+    "control_allies",
+    "death_link",
 })
 
 
@@ -197,6 +199,7 @@ class SettlersContext(CommonContext):
         self.locations_checked = []  # Changed from set to list
         self.items_received = []
         self.savegames_appended_until = 0  # number of received items already reflected in SaveGames folder name
+        self.deathlink_sent = False
         
         # Load saved game path if it exists
         self.load_game_path()
@@ -263,7 +266,92 @@ class SettlersContext(CommonContext):
             os.rename(current_path, new_path)
         except Exception as e:
             logger.error(f"Failed to update SaveGames folder name: {e}")
+    def append_notification_to_savegames_folder(self, sender: str, item_name: str, receiver: str):
+        try:
+            documents_dir = get_documents_folder()
+            game_folder = get_game_documents_folder()
+            savegames_base = os.path.join(documents_dir, game_folder, "SaveGames")
 
+            if not os.path.isdir(savegames_base):
+                return
+
+            current_folder = None
+
+            for entry in os.listdir(savegames_base):
+                if entry.startswith("__archipelagonotify~"):
+                    current_folder = entry
+                    break
+
+            if current_folder and len(current_folder) < 140:
+                current_path = os.path.join(savegames_base, current_folder)
+
+                new_name = (
+                    current_folder + f"{sender}^{item_name}^{receiver}~"
+                )
+            else:
+                new_name = (
+                    "__archipelagonotify~" + f"{sender}^{item_name}^{receiver}~"
+                )
+
+                current_path = os.path.join(
+                    savegames_base,
+                    new_name
+                )
+
+                os.makedirs(current_path, exist_ok=True)
+                return
+
+            new_path = os.path.join(
+                savegames_base,
+                new_name
+            )
+
+            os.rename(current_path, new_path)
+
+        except Exception as e:
+            logger.error(
+                f"Failed to append notification: {e}"
+            )
+    def append_death_link_to_savegames_folder(self):
+        try:
+            item_name = "deathlink"
+            if not item_name:
+                return
+            # Count current value for this item for the current player
+            current_value = 1
+            # Build segment
+            segment = f"{item_name}.{current_value}-"
+            # Resolve Documents\<Game Folder>\SaveGames
+            documents_dir = get_documents_folder()
+            game_folder = get_game_documents_folder()
+            savegames_base = os.path.join(documents_dir, game_folder, "SaveGames")
+            os.makedirs(savegames_base, exist_ok=True)
+            prefix = "__archipelago-"
+            candidates = [d for d in os.listdir(savegames_base) if d.startswith(prefix) and os.path.isdir(os.path.join(savegames_base, d))]
+            if candidates:
+                current_name = max(candidates, key=lambda d: os.path.getmtime(os.path.join(savegames_base, d)))
+                current_path = os.path.join(savegames_base, current_name)
+
+                # Reset to base archipelago folder
+                new_name = "__archipelago-"
+                new_path = os.path.join(savegames_base, new_name)
+                os.rename(current_path, new_path)
+                current_name = new_name
+                current_path = new_path
+                logger.info("Reset SaveGames folder to __archipelago- (6+ items reached)")
+            
+            # Only append if this exact segment is not already present
+            if current_name.endswith(segment):
+                return
+            if f"-{segment}" in current_name or current_name.endswith(segment):
+                return
+            new_name = current_name + segment
+            new_path = os.path.join(savegames_base, new_name)
+            # Rename the folder
+            os.rename(current_path, new_path)
+        except Exception as e:
+            logger.error(f"Failed to update SaveGames folder name: {e}")
+    
     def reset_savegames_folder(self):
         """Reset the SaveGames folder to __archipelago-"""
         try:
@@ -273,6 +361,16 @@ class SettlersContext(CommonContext):
             savegames_base = os.path.join(documents_dir, game_folder, "SaveGames")
             os.makedirs(savegames_base, exist_ok=True)
             prefix = "__archipelago-"
+            
+            # Find existing archipelago folder
+            candidates = [d for d in os.listdir(savegames_base) if d.startswith(prefix) and os.path.isdir(os.path.join(savegames_base, d))]
+            if candidates:
+                current_name = candidates[0]
+                current_path = os.path.join(savegames_base, current_name)
+                new_path = os.path.join(savegames_base, prefix)
+                os.rename(current_path, new_path)
+ 
+            prefix = "__archipelagonotify~"
             
             # Find existing archipelago folder
             candidates = [d for d in os.listdir(savegames_base) if d.startswith(prefix) and os.path.isdir(os.path.join(savegames_base, d))]
@@ -328,7 +426,9 @@ class SettlersContext(CommonContext):
                     logger.debug(f"GDB path calculated but does not exist yet: {self.gdb_path}")
         except Exception as e:
             logger.error(f"Failed to load paths: {e}")
-
+    async def on_deathlink(self, data):
+        super().on_deathlink(data)
+        self.append_death_link_to_savegames_folder()
     @staticmethod
     def _get_archipelago_bounds(content: bytes) -> typing.Optional[tuple[int, int, int]]:
         """
@@ -831,6 +931,7 @@ class SettlersContext(CommonContext):
             self.messages[(time.time(), msg_id)] = msg
 
     def on_package(self, cmd: str, args: dict):
+        super().on_package(cmd, args)
         global item_ids, location_ids, items_by_id, locations_by_id
         
         if cmd == 'Connected':
@@ -845,11 +946,17 @@ class SettlersContext(CommonContext):
             async def initialize_sequence():
                 # First get the game path and initialize GDB reader
                 await self.get_game_path()
+
+                if self.slot_data.get("death_link", False):
+                    await self.update_death_link(True)
                 
                 # Request received items and checked locations from server
                 await self.send_msgs([
                     {"cmd": "Get", "keys": ["received_items"]},
                 ])
+
+                if self.slot_data["death_link"]:
+                    await self.update_death_link(True)
 
                 self.locations_checked = args.get("checked_locations", [])
             
@@ -876,12 +983,13 @@ class SettlersContext(CommonContext):
                     item_global_index = start_index + offset
                     if start_index != 0 and item_global_index >= self.savegames_appended_until:
                         self.append_item_to_savegames_folder(network_item.item)
+
                         item_name = items_by_id.get(network_item.item)
+
                         if item_name:
                             value = self.get_item_count_for_id(network_item.item)
                 except Exception as e:
                     logger.error(f"Error processing received item: {e}")
-            # Advance the watermark for appended items
             self.savegames_appended_until = max(self.savegames_appended_until, start_index + len(args["items"]))
                 
         elif cmd == 'LocationChecks':
@@ -939,7 +1047,13 @@ class SettlersContext(CommonContext):
 
     def on_print_json(self,args: dict):
         if self.ui:
-            self.ui.print_json(copy.deepcopy(args["data"]))
+            super().on_print_json(args)
+            if args.get("type") == "ItemSend" or args.get("type") == "ItemRecieved":
+                receiver_name = self.player_names[args.get("receiving")]
+                item = args.get("item")
+                item_name = items_by_id.get(item.item)
+                sender_name = self.player_names[item.player]
+                self.append_notification_to_savegames_folder(sender_name, item_name, receiver_name)
         else:
             text = self.jsontotextparser(copy.deepcopy(args["data"]))
         relevant = args.get("type", None) in {"Hint", "ItemSend"}
@@ -1156,7 +1270,9 @@ def process_data(ctx: SettlersContext):
     updates["difficulty"] = difficulty
     updates["player_color"] = ctx.slot_data["player_color"]
     updates["game_speed"] = ctx.slot_data["game_speed"]
-
+    updates["control_allies"] = ctx.slot_data["control_allies"]
+    updates["death_link"] = ctx.slot_data["death_link"]
+    
     # Progression Difficulty Balancing
     if ctx.slot_data["progression_difficulty"] == 1:
         progression_status = len(item_counts)/len(item_ids)
@@ -1286,9 +1402,21 @@ async def game_sync_task(ctx: SettlersContext):
                                 {"cmd": "LocationChecks", 
                                  "locations": [location_id]}
                             ])
-                            
+
                 except Exception as e:
                     logger.error(f"Error checking location {location_name}: {e}")
+
+            death_trigger = ctx.get_value("death_link_trigger")
+
+            if death_trigger == 1 and not ctx.deathlink_sent:
+                ctx.deathlink_sent = True
+
+                await ctx.send_death(
+                    f"{ctx.player_names[ctx.slot]} died."
+                )
+
+            elif death_trigger == 0:
+                ctx.deathlink_sent = False
                     
             # Sleep for a short time to avoid excessive CPU usage
             await asyncio.sleep(0.5)
